@@ -1,0 +1,25 @@
+Task:  NMAAS-6788
+
+Tested in the ENM version 19.17
+
+How to use:
+1 - Copy the zip file;
+2 - Change the permission for the SH files to be an executable file;
+	chmod 777 *.sh
+3 - Copy the Heat templates from the current ENM version of the customer:
+	dpmediation.yaml
+	dpmediation_definition.yaml
+	lvs_definition.yaml
+	lvs.yaml
+4 - Leave the Heat Templates in the same folder that the bash scripts;
+5 - Copy the SED.json file;
+6 - Leave the SED.json file in the same folder that the bash scripts;
+7 - Fill the variable.global file with the entries:
+	Internal DP-Mediation server IP
+	External LVSRouter server IP
+	Internal LVSRouter server IP
+	Name of the SED.json
+8 - Only change the others options in the variable.global,if changed the name of heat templates;
+9 - Execute the main.sh script;
+    ./main.sh --adjust-heat-template - If you want create the heat templates for the DP HA solution
+    ./main.sh --create-stack - If you want to create the stack for the DP HA solution

@@ -1,0 +1,1006 @@
+description: DP_HA-dpmediation template
+heat_template_version: 2015-04-30
+parameters:
+  lvsrouter_internal_ip_list: 
+    type: string
+  NodeIndex:
+    type: string
+  allowed_address_pairs:
+    description: Not SED KEY
+    type: comma_delimited_list
+    default: "0.0.0.0/0,::/0"
+  deployment_id:
+    type: string
+  dpmediation_external_ipv6_list:
+    type: comma_delimited_list
+  dpmediation_internal_ip_list:
+    type: comma_delimited_list
+  enm_external_network_name:
+    type: string
+  enm_external_security_group_name:
+    type: string
+  enm_internal_network_name:
+    type: string
+  enm_rhel6_jboss_image_name:
+    type: string
+  external_gateway_ipv6:
+    default: ''
+    type: string
+  external_mtu:
+    default: 1500
+    type: string
+  flavor_dpmediation:
+    type: string
+  ha_policy:
+    type: string
+  internal_netmask:
+    type: string
+  internal_port_security_enabled:
+    type: boolean
+  key_name:
+    type: string
+  nat_combined_security_groups:
+    description: Not SED KEY
+    type: comma_delimited_list
+    default: "frstaging01_internal_security_group,frstaging01_external_security_group"
+  server_group_uuid:
+    type: string
+  service_name:
+    default: dpmediation
+    type: string
+  service_registry_datacenter:
+    default: dc1
+    type: string
+  service_registry_dns_port:
+    default: 8600
+    type: string
+  service_registry_domain:
+    default: enm
+    type: string
+  serviceregistry_internal_ip_list:
+    type: comma_delimited_list
+  svc_CM_vip_external_ipv6_address:
+    type: string
+  svc_CM_vip_internal:
+    type: string
+  svc_FM_vip_external_ipv6_address:
+    type: string
+  svc_PM_vip_external_ipv6_address:
+    type: string
+  timezone:
+    type: string
+  use_config_drive:
+    default: true
+    type: boolean
+resources:
+  dpmediation_definition_user_data:
+    properties:
+      parts:
+      - config: |-
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /etc/sysconfig/network-scripts/route6-eth0
+              owner: root:root
+              permissions: '0644'
+              content : |
+                FF02::/64 dev eth0 table local
+
+            - path: /etc/sysconfig/network-scripts/route6-eth1
+              owner: root:root
+              permissions: '0644'
+              content : |
+
+            - path: /run/cloud-init/add_mcast_route.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                SCRIPT_NAME=$(basename ${0})
+                LOG_TAG="IPV6-MCAST-ROUTE-$(hostname -s)"
+                ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                source ${ENM_UTILS}
+                _IP=/sbin/ip
+                _RM=/bin/rm
+                MCAST_ROUTE_6="FF02::/64"
+                # local routing table
+                info "Adding multicast local route for jgroups"
+                run $_IP -6 route add table local $MCAST_ROUTE_6 dev eth0
+                EXISTING=$($_IP -6 route show table local $MCAST_ROUTE_6 | wc -l)
+                if [ "$EXISTING" -eq 1 ];then
+                  info "IPv6 Multicast local route for jgroups defined"
+                else
+                  error "No IPv6 multicast local route for jgroups defined"
+                  exit 1
+                fi
+                run $_RM -f /etc/sysconfig/network-scripts/route6-eth1
+                if [ -f /etc/sysconfig/network-scripts/route6-eth1 ];then
+                  error "IPv6 multicast local route exists for eth1"
+                  exit 1
+                fi
+
+          runcmd:
+            - /run/cloud-init/add_mcast_route.sh
+      - config:
+          str_replace:
+            params:
+              _SERVICE_REGISTRY_DATACENTER_:
+                get_param: service_registry_datacenter
+              _SERVICE_REGISTRY_DOMAIN_:
+                get_param: service_registry_domain
+            template: |
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              manage-resolv-conf: true
+
+              write_files:
+                - path: /etc/resolv.conf.new
+                  owner: root:root
+                  permissions: '0644'
+                  content : |
+                    search service._SERVICE_REGISTRY_DOMAIN_ service._SERVICE_REGISTRY_DATACENTER_._SERVICE_REGISTRY_DOMAIN_
+                    nameserver 127.0.0.1
+
+              runcmd:
+                - mv /etc/resolv.conf.new /etc/resolv.conf && chattr +i /etc/resolv.conf
+      - config:
+          str_replace:
+            params:
+              _TIMEZONE_:
+                get_param: timezone
+            template: |-
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              timezone: _TIMEZONE_
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/set_hostname.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                SCRIPT_NAME=$(basename ${0})
+                LOG_TAG="SET-HOSTNAME"
+                ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                source ${ENM_UTILS}
+                RHEL_RELEASE="/etc/redhat-release"
+                SYS_NETWORK="/etc/sysconfig/network"
+
+                myhostname=$(uname -n | cut -d'.' -f1)
+                rhel_version=$(awk '{print $7}' ${RHEL_RELEASE} | cut -d. -f1)
+                if [[ ${rhel_version} == "6" ]]; then
+                  run hostname ${myhostname}
+                  run sed -i "s/HOSTNAME.\+/HOSTNAME=${myhostname}/" ${SYS_NETWORK}
+                else
+                  run hostnamectl set-hostname ${myhostname}
+                fi
+                run timeout 60s service rsyslog restart
+                info "Hostname updated successfully"
+
+          runcmd:
+            - /run/cloud-init/set_hostname.sh
+      - config:
+          str_replace:
+            params:
+              _DNS_PORT_:
+                get_param: service_registry_dns_port
+              _SERVICE_REGISTRY_1_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 0
+              _SERVICE_REGISTRY_2_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 1
+              _SERVICE_REGISTRY_3_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 2
+            template: |-
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              write_files:
+                - path: /etc/ntp.conf
+                  owner: root:root
+                  permissions: '0644'
+                  content : |
+                    # drift file
+                    driftfile /var/lib/ntp/drift
+                    # Permit time synchronization with our time source, but do not
+                    # permit the source to query or modify the service on this system.
+                    restrict default kod nomodify notrap nopeer noquery
+                    restrict -6 default kod nomodify notrap nopeer noquery
+                    # Permit all access over the loopback interface.  This could
+                    # be tightened as well, but to do so would effect some of
+                    # the administrative functions.
+                    restrict 127.0.0.1
+                    restrict -6 ::1
+                    # NTP servers
+                    server _SERVICE_REGISTRY_1_IP_
+                    server _SERVICE_REGISTRY_2_IP_
+                    server _SERVICE_REGISTRY_3_IP_
+
+              runcmd:
+                - service ntpd restart
+                - service crond restart
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          final_message: "The system is now up, after $UPTIME seconds"
+      - config:
+          str_replace:
+            params:
+              _ADDRESSIPV6_: ''
+              _ADDRESS_:
+                get_param:
+                - dpmediation_internal_ip_list
+                - get_param: NodeIndex
+              _GATEWAYIPV6_: ''
+              _GATEWAY_:
+                get_param: lvsrouter_internal_ip_list
+              _INTERFACE_: eth0
+              _NETMASK_:
+                get_param: internal_netmask
+            template: |
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              write_files:
+                - path: /run/cloud-init/plumb_ip_address-_INTERFACE_.sh
+                  owner: root:root
+                  permissions: '0700'
+                  content : |
+                    #!/bin/bash
+                    SCRIPT_NAME=$(basename ${0})
+                    LOG_TAG="PLUMB-INTERFACE-$(hostname -s)"
+                    ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                    [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                    source ${ENM_UTILS}
+
+                    # Check interface is plumbed correctly
+                    subnet_address=$(ip addr show _INTERFACE_ | grep -w inet | awk '{print $2}')
+                    ipv4CidrPattern="((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/(3[0-1]|[1-2][0-9]|[1-9])"
+                    if ! [[ $subnet_address =~ $ipv4CidrPattern ]]; then
+                      error "_INTERFACE_ was not plumbed correctly!"
+                      run dhclient -r _INTERFACE_
+                      run dhclient _INTERFACE_
+                      subnet_address=$(ip addr show _INTERFACE_ | grep -w inet | awk '{print $2}')
+                      if [[ $subnet_address =~ $ipv4CidrPattern ]]; then
+                        info "_INTERFACE_ now has IP assigned correctly."
+                      fi
+                    fi
+
+                    # Plumbs up additional ethernet interface if exists
+                    listOfEthInterface=$( netstat -ia | sed 's/[ \t].*//;/^$/d' | grep eth )
+                    for ethernet in $listOfEthInterface; do
+                      if [ ! -f /etc/sysconfig/network-scripts/ifcfg-${ethernet} ]; then
+                        info "Initialising Interface ${ethernet}"
+                        cat /etc/sysconfig/network-scripts/ifcfg-eth0 | sed 's/eth0/'"$ethernet"'/g' > /etc/sysconfig/network-scripts/ifcfg-${ethernet}
+                        # can fail so not using run function
+                        ifup /etc/sysconfig/network-scripts/ifcfg-${ethernet}
+                      fi
+                    done
+
+                    # Plumbs up the ethernet interface
+                    info "Plumbing Interface _INTERFACE_"
+
+                    # Remove parameters
+                    run sed -i '/BOOTPROTO=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                    run sed -i '/NETMASK=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                    run sed -i '/IPADDR=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                    run sed -i '/GATEWAY=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+
+                    #check if ipv4 is set to ipv6 address
+                    if [[ "_ADDRESS_" != *:* ]]; then
+                      echo 'BOOTPROTO=none' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'NETMASK=_NETMASK_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'IPADDR=_ADDRESS_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'GATEWAY=_GATEWAY_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                    fi
+
+                    # plumb ipv6 address if it is present
+                    if ! [ -z '_ADDRESSIPV6_' ]; then
+                      # Remove parameters
+                      run sed -i '/IPV6INIT=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      run sed -i '/IPV6ADDR=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      echo 'IPV6INIT=yes' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'IPV6ADDR=_ADDRESSIPV6_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      if ! [ -z '_GATEWAYIPV6_' ]; then
+                        run sed -i '/IPV6_DEFAULTGW=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                        echo 'IPV6_DEFAULTGW=_GATEWAYIPV6_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      fi
+                    fi
+
+                    if [[ '_MTU_' =~ ^[0-9]+$ ]]; then
+                      info "Setting External MTU to _MTU_ on _INTERFACE_ interface."
+                      echo 'MTU=_MTU_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                    fi
+
+                    # can fail so not using run function
+                    ifdown _INTERFACE_
+                    run ifup /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                    interfaceUp=$( ifconfig | grep _INTERFACE_ )
+                    if [[ ${interfaceUp} == "" ]]; then
+                      error "ERROR: Issue bring up the interface: _INTERFACE_"
+                    fi
+
+              runcmd:
+                - /run/cloud-init/plumb_ip_address-_INTERFACE_.sh
+      - config:
+          str_replace:
+            params:
+              _ADDRESSIPV6_:
+                get_param:
+                - dpmediation_external_ipv6_list
+                - get_param: NodeIndex
+              _GATEWAYIPV6_:
+                get_param: external_gateway_ipv6
+              _INTERFACE_: eth1
+              _MTU_:
+                get_param: external_mtu
+            template: |
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              write_files:
+                - path: /run/cloud-init/plumb_ipv6_address.sh
+                  owner: root:root
+                  permissions: '0700'
+                  content : |
+                    #!/bin/bash
+                    SCRIPT_NAME=$(basename ${0})
+                    LOG_TAG="PLUMB-IPV6-$(hostname -s)"
+                    ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                    [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                    source ${ENM_UTILS}
+                    # Plumbs up the ethernet interface
+                    info "Plumbing Interface _INTERFACE_"
+
+                    # plumb ipv6 address if it is present
+                    if ! [ -z '_ADDRESSIPV6_' ]; then
+                      # Remove parameters
+                      run sed -i '/BOOTPROTO=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      run sed -i '/IPV6INIT=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      run sed -i '/IPV6ADDR=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      run sed -i '/IPV6_DEFAULTGW=/c\' /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_ > /dev/null
+                      echo 'IPV6INIT=yes' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'IPV6ADDR=_ADDRESSIPV6_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      echo 'IPV6_DEFAULTGW=_GATEWAYIPV6_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+
+                      if [[ '_MTU_' =~ ^[0-9]+$ ]]; then
+                        info "Setting External MTU to _MTU_ on _INTERFACE_ interface."
+                        echo 'MTU=_MTU_' >> /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      fi
+
+                      ifdown _INTERFACE_
+                      run ifup /etc/sysconfig/network-scripts/ifcfg-_INTERFACE_
+                      interfaceUp=$( ifconfig | grep _INTERFACE_ )
+                      if [[ ${interfaceUp} == "" ]]; then
+                        error "ERROR: Issue bring up the interface: _INTERFACE_"
+                      fi
+                    fi
+
+              runcmd:
+                - /run/cloud-init/plumb_ipv6_address.sh
+      - config:
+          str_replace:
+            params:
+              _INSTANCE_:
+                get_param: NodeIndex
+            template: |
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              write_files:
+                - path: /etc/consul.d/agent/service_registry.json
+                  owner: root:root
+                  permissions: '0644'
+                  content : |
+                    {
+                      "services": [
+                        {
+                          "name": "dpmediation",
+                          "enableTagOverride": false,
+                          "address": "%%_ETH0_%%"
+                        },
+                        {
+                          "name": "svc-%%_INSTANCE_%%-dpmediation",
+                          "enableTagOverride": false,
+                          "address": "%%_ETH0_%%",
+                          "tags": [
+                            "deprecated"
+                          ]
+                        },
+                        {
+                          "name": "dpmediation-%%_INSTANCE_%%-internal",
+                          "enableTagOverride": false,
+                          "address": "%%_ETH0_%%",
+                          "tags": [
+                            "deprecated"
+                          ]
+                        }
+                      ]
+                    }
+
+                - path: /run/cloud-init/service_registry.sh
+                  owner: root:root
+                  permissions: '0700'
+                  content : |
+                    #!/bin/bash
+                    echo $(ip addr show eth0 | grep -w inet | awk '{print $2}' | cut -d / -f 1) | (sed -i.bak 's/%%_ETH0_%%/'$(xargs)'/g' /etc/consul.d/agent/service_registry.json)
+                    instance=$((_INSTANCE_ + 1))
+                    sed -i "s/%%_INSTANCE_%%/$instance/g" /etc/consul.d/agent/service_registry.json
+              runcmd:
+                - /run/cloud-init/service_registry.sh
+      - config:
+          str_replace:
+            params:
+              _DNS_PORT_:
+                get_param: service_registry_dns_port
+              _NAMESERVERA_IPV6_: ''
+              _NAMESERVERB_IPV6_: ''
+              _NAMESERVER_A_: ''
+              _NAMESERVER_B_: ''
+              _SERVICE_REGISTRY_1_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 0
+              _SERVICE_REGISTRY_2_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 1
+              _SERVICE_REGISTRY_3_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 2
+              _SERVICE_REGISTRY_4_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 3
+              _SERVICE_REGISTRY_5_IP_:
+                get_param:
+                - serviceregistry_internal_ip_list
+                - 4
+              _SERVICE_REGISTRY_DATACENTER_:
+                get_param: service_registry_datacenter
+              _SERVICE_REGISTRY_DOMAIN_:
+                get_param: service_registry_domain
+            template: |
+              #cloud-config
+              merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+              write_files:
+                - path: /etc/consul.d/agent/config.json
+                  owner: root:root
+                  permissions: '0644'
+                  content : |
+                    {
+                        "bind_addr": "0.0.0.0",
+                        "advertise_addr": "%%_ETH0_%%",
+                        "node_name": "%%_VM_NAME_%%",
+                        "server": false,
+                        "datacenter": "_SERVICE_REGISTRY_DATACENTER_",
+                        "data_dir": "/ericsson/consul",
+                        "disable_remote_exec": true,
+                        "log_level": "INFO",
+                        "enable_syslog": true,
+                        %%_ENABLE_CHECKS_%%
+                        "domain": "_SERVICE_REGISTRY_DOMAIN_",
+                        "ports":{
+                          "dns": _DNS_PORT_
+                        },
+                        "dns_config":{
+                          "only_passing": true
+                        },
+                        "raft_protocol": 3,
+                        "retry_join": [%%_SERVERS_%%],
+                        "rejoin_after_leave": true,
+                        "leave_on_terminate": false,
+                        "disable_update_check": true,
+                        "client_addr": "0.0.0.0",
+                        "recursors": [%%_RECURSORS_%%]
+                    }
+
+                - path: /run/cloud-init/prepare_consul_env.sh
+                  owner: root:root
+                  permissions: '0700'
+                  content : |
+                    #!/bin/bash
+                    LOG_TAG="PREPARE-CONSUL-ENV-$(hostname -s)"
+                    ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                    [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                    source ${ENM_UTILS}
+                    # Tech Debt -- should be done in image not in templates
+                    run chown root:consul /usr/bin/consul
+                    run chmod 750 /usr/bin/consul
+                    # End Tech Debt
+
+                    consul_cloud_file="/ericsson/consul/consul_cloud.cfg"
+                    info "Creating file: ${consul_cloud_file}"
+                    echo dns_port=_DNS_PORT_ > ${consul_cloud_file}
+
+                - path: /run/cloud-init/service_reg_config.sh
+                  owner: root:root
+                  permissions: '0700'
+                  content : |
+                    #!/bin/bash
+                    echo $(hostname -s) | tr '[:upper:]' '[:lower:]' | (sed -i.bak 's/%%_VM_NAME_%%/'$(xargs)'/g' /etc/consul.d/agent/config.json)
+                    echo $(ip addr show eth0 | grep -w inet | awk '{print $2}' | cut -d / -f 1) | (sed -i.bak 's/%%_ETH0_%%/'$(xargs)'/g' /etc/consul.d/agent/config.json)
+                    # Set consul servers
+                    servers="_SERVICE_REGISTRY_1_IP_ _SERVICE_REGISTRY_2_IP_ _SERVICE_REGISTRY_3_IP_ _SERVICE_REGISTRY_4_IP_ _SERVICE_REGISTRY_5_IP_"
+                    join=""
+                    for server in $servers; do
+                       if [ "$server" != "" ]; then
+                           if [ "$join" == "" ]; then
+                               join="\"${server}\""
+                           else
+                               join="${join},\"${server}\""
+                           fi
+                       fi
+                    done
+                    sed -i.bak 's/%%_SERVERS_%%/'$join'/g' /etc/consul.d/agent/config.json
+                    ipv6_only=FALSE
+                    iface_count=$(ip -o link show | wc -l)
+                    if [ "$iface_count" -gt 2 ]; then
+                      ipv4_external=$(ip -4 addr show eth1|grep global|awk '{print $2}')
+                      # Set DNS servers
+                      dns="_NAMESERVER_A_ _NAMESERVER_B_"
+                      if [ -z "${ipv4_external}" ]; then
+                        dns="_NAMESERVERA_IPV6_ _NAMESERVERB_IPV6_"
+                        ipv6_only=TRUE
+                      fi
+                    fi
+                    if [ -z "$dns" ]; then
+                      dns="_SERVICE_REGISTRY_1_IP_ _SERVICE_REGISTRY_2_IP_ _SERVICE_REGISTRY_3_IP_ _SERVICE_REGISTRY_4_IP_ _SERVICE_REGISTRY_5_IP_"
+                    fi
+                    join=""
+                    for server in $dns; do
+                       if [ "$server" != "" ]; then
+                           if [ "$join" == "" ]; then
+                               if [ "$ipv6_only" == TRUE ]; then
+                                   join="\"\[${server}\]\""
+                               else
+                                   join="\"${server}\""
+                               fi
+                           else
+                               if [ "$ipv6_only" == TRUE ]; then
+                                   join="${join},\"\[${server}\]\""
+                               else
+                                   join="${join},\"${server}\""
+                               fi
+                           fi
+                       fi
+                    done
+                    sed -i.bak 's/%%_RECURSORS_%%/'$join'/g' /etc/consul.d/agent/config.json
+                    # Set enable_script_checks for Consul 0.9.0+
+                    CONSUL_VERSION=$(consul --version | egrep -o "[0-9]+\\.[0-9]+\\.[0-9]+")
+                    ENABLE_CHECKS='"enable_script_checks": true,'
+                    IFS=. read major minor build <<<"${CONSUL_VERSION}"
+                    if [ $major -gt 0 ] || [ $minor -gt 8 ]; then
+                        sed -i.bak "s/%%_ENABLE_CHECKS_%%/${ENABLE_CHECKS}/g" /etc/consul.d/agent/config.json
+                    else
+                        sed -i.bak "s/%%_ENABLE_CHECKS_%%//g" /etc/consul.d/agent/config.json
+                    fi
+
+                - path: /run/cloud-init/consul_start.sh
+                  owner: root:root
+                  permissions: '0755'
+                  content : |
+                    #!/bin/bash
+                    LOG_TAG="START-SERVICEREGISTRY-$(hostname -s)"
+                    ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                    [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                    source ${ENM_UTILS}
+                    if [ $(/sbin/pidof systemd) ] ; then
+                        systemctl enable consul.service
+                        systemctl start consul.service
+                    elif [ $(/sbin/pidof init) ] ; then
+                        chkconfig --add consul
+                        service consul start
+                    else
+                        error "Failed to find any services system."
+                    fi
+              runcmd:
+                - /run/cloud-init/prepare_consul_env.sh
+                - /run/cloud-init/service_reg_config.sh
+                - echo "Starting up Consul"
+                - /run/cloud-init/consul_start.sh
+                - set -e
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/wait_for_NFS_shares.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                SCRIPT_NAME=$(basename ${0})
+                LOG_TAG="WAIT-FOR-CONFIGSTORE-$(hostname -s)"
+                ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                source ${ENM_UTILS}
+                # Check does the repo directory exist if so continue else wait
+                _DIR=/ericsson/tor/data
+                GLOBAL_PROPS=${_DIR}/global.properties
+                /bin/mkdir -p ${_DIR}
+                # Mount global.properties so can update /etc/host file
+                info "Waiting for the NFS File share"
+                while true
+                do
+                  /bin/mount nfsdata:/ericsson/data ${_DIR} -o soft,defaults,_netdev
+                  if [ $? -ne 0 ]; then
+                    info "+++++ NFS File share(data) not available-Retry in 10sec"
+                  fi
+                  if [ -f ${GLOBAL_PROPS} ];then
+                    info "+++++ global.properties available"
+                    break
+                  else
+                    sleep 10
+                  fi
+                done
+          runcmd:
+            - /run/cloud-init/wait_for_NFS_shares.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /etc/hosts
+              owner: root:root
+              permissions: '0644'
+              content : |
+                127.0.0.1 localhost
+
+            - path: /run/cloud-init/update_hosts.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                HOST_TMP=/tmp/hosts.$$
+                # 2 files as mounts differ on nfs_repo and enm stacks.
+                _IP_INTERNAL=$(ip addr show eth0 | grep -w inet | awk '{print $2}' | cut -d / -f 1)
+                _HOSTNAME=$(hostname -s)
+                echo -e "${_IP_INTERNAL} ${_HOSTNAME}" >> /etc/hosts
+                GLOBAL_PROPERTIES_NFS=/ericsson/data/global.properties
+                GLOBAL_PROPERTIES_STACK=/ericsson/tor/data/global.properties
+
+                for file in ${GLOBAL_PROPERTIES_NFS} ${GLOBAL_PROPERTIES_STACK}
+                do
+                  if [[ -f ${file} ]] ; then
+                    source ${file}
+                    GLOB_FILE=${file}
+                    logger "Updating httpd entries to /etc/hosts as global.properties is available"
+                    for vm in httpd
+                    do
+                      array=(`grep "^$vm=" $GLOB_FILE | awk -F"=" '{print $2}' | sed 's/,/ /g'`)
+                      for index in "${!array[@]}"
+                      do
+                        id=$((index+1))
+                        echo -e "${array[index]} httpd-instance-$id" >> /etc/hosts
+                      done
+                    done
+
+                    echo -e "$haproxy_1_ip_internal sso.${web_host_default} iorfile.${web_host_default}" >> /etc/hosts
+                    if [ "${ip_version}" == "v6" ]; then
+                      echo -e "${haproxy_ipv6address} ${web_host_default} iorfile.${web_host_default}" >> /etc/hosts
+                    else
+                      echo -e "${haproxy_1_external_ip_address} ${web_host_default} iorfile.${web_host_default}" >> /etc/hosts
+                    fi
+                  else
+                    logger "global.properties is not available"
+                  fi
+                done
+
+          runcmd:
+            - /run/cloud-init/update_hosts.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/enm_yum_repositories.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                # Clean out any existing / prebaked repos
+                rm -rf /etc/yum.repos.d/*
+
+                # Set the base repo location
+                base_repo_location="http://repo"
+
+                # Choose a default base repo location if one isn't passed in as an argument
+                logger -t "CLOUD INIT" -p user.info "( enm_yum_repositories.sh ): Configuring yum repository for ENM ISO"
+                echo "[enm]
+                gpgcheck = 0
+                enabled = 1
+                baseurl = ${base_repo_location}/enm/
+                name = ENM Repository" > /etc/yum.repos.d/enm.repo
+
+                if grep -q -i "release 6" /etc/redhat-release; then
+                  logger -t "CLOUD INIT" -p user.info "( enm_yum_repositories.sh ): Configuring yum repositories for RHEL 6"
+
+                  echo "[enm_rhel6]
+                gpgcheck = 0
+                enabled = 1
+                baseurl = ${base_repo_location}/6/
+                name = ENM RHEL 6 Repository" > /etc/yum.repos.d/enm_rhel6.repo
+
+                  echo "[enm_rhel6_updates]
+                gpgcheck = 0
+                enabled = 1
+                baseurl = ${base_repo_location}/rhel6_updates/
+                name = ENM RHEL 6 Updates Repository" > /etc/yum.repos.d/enm_rhel6_updates.repo
+
+                elif grep -q -i "release 7" /etc/redhat-release; then
+                  logger -t "CLOUD INIT" -p user.info "( enm_yum_repositories.sh ): Configuring yum repositories for RHEL 7"
+
+                  echo "[enm_rhel7]
+                gpgcheck = 0
+                enabled = 1
+                baseurl = ${base_repo_location}/7/
+                name = ENM RHEL 7 Repository" > /etc/yum.repos.d/enm_rhel7.repo
+
+                  echo "[enm_rhel7_updates]
+                gpgcheck = 0
+                enabled = 1
+                baseurl = ${base_repo_location}/rhel7_updates/
+                name = ENM RHEL 7 Updates Repository" > /etc/yum.repos.d/enm_rhel7_updates.repo
+
+                else
+                  logger -t "CLOUD INIT" -p user.error "( enm_yum_repositories.sh ): Could not determine RHEL version"
+                  exit 1
+                fi
+
+          runcmd:
+            - /run/cloud-init/enm_yum_repositories.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/wait_for_enm_repos.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                  #!/bin/bash
+                  # Check does the repo directory exist if so continue else wait
+                  for repo in $(ls /etc/yum.repos.d/ | grep enm)
+                  do
+                    # ${var%pattern} strips "pattern" from the end of $var
+                    repo=${repo%.repo}
+                    while true
+                    do
+                      yum --disablerepo="*" --enablerepo="${repo}" list >/dev/null 2>&1
+                      if [ $? -eq 0 ] ;then
+                        logger -s -t REPO-WAIT "${repo} REPO exists continuing the deployment..."
+                        break
+                      else
+                        logger -s -t REPO-WAIT "Waiting for ${repo} Repo to exist"
+                        sleep 2
+                      fi
+                    done
+                  done
+
+          runcmd:
+            - /run/cloud-init/wait_for_enm_repos.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/wait_for_nfs_vms.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                while true
+                do
+                  if [ "$(getent hosts nfsdata)" -a "$(getent hosts nfsnorollback)" -a "$(getent hosts nfssmrs)" -a "$(getent hosts nfspm1)" -a "$(getent hosts nfspm2)" -a "$(getent hosts nfspmlinks)" ]
+                    then
+                     logger -s "NFS VMs available..."
+                     break
+                    else
+                     logger -s "Waiting for NFS VMs..."
+                     sleep 10
+                  fi
+                done
+
+          runcmd:
+            - /run/cloud-init/wait_for_nfs_vms.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /etc/auto.master
+              owner: root:root
+              permissions: '0644'
+              content: |
+                /-   /etc/auto.enm
+            - path: /etc/auto.enm
+              owner: root:root
+              permissions: '0644'
+              content: |
+                /var/ericsson/ddc_data                                 -rw,soft nfsddcdata:/ericsson/ddc_data
+                /etc/opt/ericsson/ERICmodeldeployment                  -rw,soft nfsmdt:/ericsson/mdt
+                /ericsson/configuration_management/UpgradeIndependence -rw,soft nfsupgind:/ericsson/config_mgmt_upgind
+                /ericsson/custom                                       -rw,soft nfscustom:/ericsson/custom
+                /ericsson/enm/dumps                                    -rw,soft nfshcdumps:/ericsson/hcdumps
+                /ericsson/tor/data                                     -rw,soft nfsdata:/ericsson/data
+                /ericsson/tor/no_rollback                              -rw,soft nfsnorollback:/ericsson/no_rollback
+
+            - path:  /etc/systemd/system/autofs.service.d/enm_autofs.conf
+              owner: root:root
+              permissions: '0644'
+              content: |
+                [Unit]
+                After=consul.service
+
+            - path: /run/cloud-init/autofs.sh
+              owner: root:root
+              permissions: '0700'
+              content: |
+                #!/bin/bash
+                SCRIPT_NAME=$(basename ${0})
+                LOG_TAG="DPMEDIATION-$(hostname -s)"
+                ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                source ${ENM_UTILS}
+
+                # Install autofs
+                run yum install -y autofs
+
+                # Create the folders
+                run mkdir -p /var/ericsson/ddc_data
+                run mkdir -p /etc/opt/ericsson/ERICmodeldeployment
+                run semanage fcontext -a -t nfs_t "/etc/opt/ericsson/ERICmodeldeployment(/.*)?"
+                run restorecon -R -v /etc/opt/ericsson/ERICmodeldeployment/
+                run mkdir -p /ericsson/configuration_management/UpgradeIndependence
+                run mkdir -p /ericsson/custom
+                run mkdir -p /ericsson/enm/dumps
+                run mkdir -p /ericsson/tor/data
+                run mkdir -p /ericsson/tor/no_rollback
+
+                # Start the service
+                # enable autofs to start in subsequent restarts
+                if [ $(pidof systemd) ]; then
+                  run systemctl enable autofs
+                  run systemctl daemon-reload
+                  run systemctl start autofs.service
+                elif [ $(pidof init) ]; then
+                  run chkconfig --add autofs
+                  run service autofs start
+                else
+                  error "failed to find any services system."
+                fi
+
+          runcmd:
+            - /run/cloud-init/autofs.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/user_permissions.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                usermod -g 205 enmadm
+                groupdel enm
+                groupmod -n enm jboss
+                groupadd jboss -g 206
+                groupmems -g jboss -a jboss_user
+                groupmems -g jboss -a enmadm
+                groupmems -g enm -a jboss_user
+                groupmems -g enm -a enmadm
+                chgrp enm /home
+                chgrp enm /ericsson
+                chmod 775 /home
+                chmod 775 /ericsson
+
+          runcmd:
+            - /run/cloud-init/user_permissions.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /run/cloud-init/config.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                SCRIPT_NAME=$(basename ${0})
+                LOG_TAG="CLOUD-INIT-CONFIG-$(hostname -s)"
+                ENM_UTILS=/opt/ericsson/enm-configuration/etc/enm_utils.lib
+                [ ! -f ${ENM_UTILS} ] && { logger "ERROR ${ENM_UTILS} doesn't exist"; exit 1; }
+                source ${ENM_UTILS}
+
+                # Install packages
+                run yum install -y ERICenmsgdpmediation_CXP9036117
+                run yum install -y ERICdpsashandlermodel_CXP9036149
+                run yum install -y ERICdomainproxyservicemodel_CXP9035687
+
+                # increase timeout for jboss
+                run sed -i '$ a STARTUP_WAIT=21600 ' /ericsson/3pp/jboss/jboss-as.conf
+
+          runcmd:
+            - /run/cloud-init/config.sh
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+
+          runcmd:
+            - echo "net.ipv6.neigh.default.gc_thresh3=2048" >> /etc/sysctl.conf
+            - sysctl -e -p
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+
+          runcmd:
+            - curl -X PUT -d "0" http://127.0.0.1:8500/v1/kv/enm/applications/lifecycle_management/services/sam_agents/stg01-dpmediation-0_override_healthcheck
+      - config: |
+          #cloud-config
+          merge_how: 'list(append)+dict(recurse_array,no_replace)+str()'
+          write_files:
+            - path: /tmp/adjust-nfs-dp-ha.sh
+              owner: root:root
+              permissions: '0700'
+              content : |
+                #!/bin/bash
+                echo "backuping folders"
+                cp -arf /ericsson/tor/data/domainProxy /tmp
+                cp -arf /ericsson/tor/data/global.properties /tmp
+                cp -arf 
+                echo "stop the autofs service"
+                /etc/init.d/autofs stop
+                echo "umount ericsson/data"
+                umount /ericsson/tor/data
+                echo "create the locally folder"
+                mkdir -p /ericsson/tor/data
+                echo "restore the backup on the locally folder"
+                cp -arf /tmp/domainProxy /ericsson/tor/data/
+                echo "start the autofs service"
+                /etc/init.d/autofs start
+          runcmd:
+            - /tmp/adjust-nfs-dp-ha.sh 
+    type: OS::Heat::MultipartMime
+  dpmediation_definition_vm_interface1_port:
+    properties:
+      fixed_ips:
+      - ip_address:
+          get_param:
+          - dpmediation_internal_ip_list
+          - get_param: NodeIndex
+      network:
+        get_param: enm_internal_network_name
+      port_security_enabled:
+        get_param: internal_port_security_enabled
+      security_groups:
+        get_param: nat_combined_security_groups
+    type: OS::Neutron::Port
+  dpmediation_definition_vm_vm:
+    properties:
+      config_drive:
+        get_param: use_config_drive
+      flavor:
+        get_param: flavor_dpmediation
+      image:
+        get_param: enm_rhel6_jboss_image_name
+      key_name:
+        get_param: key_name
+      metadata:
+        ha-policy:
+          get_param: ha_policy
+      name:
+        list_join:
+        - '-'
+        - - get_param: deployment_id
+          - get_param: service_name
+          - get_param: NodeIndex
+      networks:
+      - port:
+          get_resource: dpmediation_definition_vm_interface1_port
+      scheduler_hints:
+        group:
+          get_param: server_group_uuid
+      user_data:
+        get_resource: dpmediation_definition_user_data
+      user_data_format: RAW
+    type: OS::Nova::Server

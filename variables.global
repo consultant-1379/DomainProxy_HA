@@ -1,0 +1,26 @@
+### Fill with INTERNAL IP for the HA DP-MEDIATION server
+DPMED_INT_IP=
+####################################################################################
+### Fill with EXTERNAL IP for the HA LVSROUTER server
+LVS_EXT_IP=
+### Fill with INTERNAL IP for the HA LVSROUTER server
+LVS_INT_IP=
+####################################################################################
+### Attention !!!
+### The DEPLOY_ID parameter should be different than used on ENM installation
+DEPLOY_ID=
+####################################################################################
+### Adjust with the name of the SED.JSON file of the customer
+SED_FILE=
+####################################################################################
+####################################################################################
+### DONT CHANGE THE VARIABLES BELOW, ONLY IF THE NAME OF THE HEAT TEMPLATES CHANGE
+####################################################################################
+DP_MED_FILE=dpmediation.yaml
+DP_MED_DEF_FILE=dpmediation_definition.yaml
+DP_MED_TMP_FILE=dpmediation.tmp
+DP_MED_DEF_TMP_FILE=dpmediation_definition.tmp
+LVS_FILE=lvs.yaml
+LVS_DEF_FILE=lvs_definition.yaml
+LVS_TMP_FILE=lvs.tmp
+LVS_DEF_TMP_FILE=lvs_definition.tmp

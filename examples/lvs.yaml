@@ -1,0 +1,252 @@
+heat_template_version: 2015-04-30
+
+description: DP_HA-lvs template
+
+parameters:
+  enm_internal_network_name:
+    type: string
+
+  enm_external_network_name:
+    type: string
+
+  internal_port_security_enabled:
+    type: boolean
+
+  nat_combined_security_groups:
+    type: comma_delimited_list
+    description: "Not SED KEY"
+    default: "frstaging01_internal_security_group,frstaging01_external_security_group"
+
+  enm_internal_security_group_name:
+    type: string
+
+  enm_external_security_group_name:
+    type: string
+
+  allowed_address_pairs:
+    type: comma_delimited_list
+    description: "Not SED KEY"
+    default: "0.0.0.0/0,::/0"
+
+  lvs_allowed_address_pairs:
+    type: comma_delimited_list
+    description: "Not SED KEY"
+    default: "0.0.0.0/0,::/0"
+
+  enm_rhel7_base_image_name:
+    type: string
+
+  flavor_lvsrouter:
+    type: string
+
+  key_name:
+    type: string
+
+  use_config_drive:
+    type: boolean
+    default: true
+
+  external_interface:
+    type: string
+
+  external_gateway:
+    type: string
+
+  external_mtu:
+    type: string
+    default: 1500
+
+  external_netmask:
+    type: string
+
+  internal_interface:
+    type: string
+
+  internal_subnet:
+    type: string
+
+  internal_netmask:
+    type: string
+
+  svc_FM_vip_to_fip:
+    type: string
+
+  svc_CM_vip_to_fip:
+    type: string
+
+  svc_PM_vip_to_fip:
+    type: string
+
+  svc_PM_vip_internal:
+    type: string
+
+  svc_CM_vip_internal:
+    type: string
+
+  svc_FM_vip_internal:
+    type: string
+
+  svc_CM_vip_external_ip_address:
+    type: string
+
+  svc_FM_vip_external_ip_address:
+    type: string
+
+  svc_PM_vip_external_ip_address:
+    type: string
+
+  service_registry_dns_port:
+    type: string
+    default: 8600
+
+  smrs_sftp_securePort:
+    type: string
+    default: 22
+
+  nameserverA:
+    type: string
+
+  nameserverB:
+    type: string
+
+  nameserverA_IPv6:
+    type: string
+    default: ""
+
+  nameserverB_IPv6:
+    type: string
+    default: ""
+
+  service_registry_datacenter:
+    type: string
+    default: dc1
+
+  service_registry_domain:
+    type: string
+    default: enm
+
+  serviceregistry_internal_ip_list:
+    type: comma_delimited_list
+
+  server_group_policy:
+    type: comma_delimited_list
+
+  lvs_external_PM_vrrp_id:
+    type: string
+
+  lvs_external_CM_vrrp_id:
+    type: string
+
+  lvs_external_FM_vrrp_id:
+    type: string
+
+  timezone:
+    type: string
+
+  svc_CM_ipv6_vip_internal:
+    type: string
+    default: ''
+
+  svc_FM_ipv6_vip_internal:
+    type: string
+    default: ''
+
+  internal_subnet_ipv6:
+    type: string
+    default: ''
+
+  external_gateway_ipv6:
+    type: string
+    default: ''
+
+  lvsrouter_instances:
+    type: string
+    default: 2
+
+  lvsrouter_internal_ip_list:
+    type: comma_delimited_list
+
+  lvsrouter_external_ip_list:
+    type: comma_delimited_list
+
+  lvsrouter_external_ipv6_list:
+    type: comma_delimited_list
+    default: ['']
+
+  deployment_id:
+    type: string
+
+  ha_policy:
+    type: string
+
+  tags:
+    type: json
+    description: "Not SED KEY"
+    default: {"enm_deployment_id": "stg01", "enm_stack_name": "DP_HA_lvs"}
+
+resources:
+  lvs_server_group:
+    type: OS::Nova::ServerGroup
+    properties:
+      name: lvs_server_group
+      policies: {get_param: server_group_policy}
+
+  lvsrouter:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: {get_param: lvsrouter_instances}
+      resource_def:
+        type: lvs_definition.yaml
+        properties:
+          NodeIndex: '%index%'
+          deployment_id: {get_param: deployment_id}
+          ha_policy: {get_param: ha_policy}
+          lvsrouter_internal_ip_list: {get_param: lvsrouter_internal_ip_list}
+          lvsrouter_external_ip_list: {get_param: lvsrouter_external_ip_list}
+          lvsrouter_external_ipv6_list: {get_param: lvsrouter_external_ipv6_list}
+          enm_internal_network_name: {get_param: enm_internal_network_name}
+          enm_internal_security_group_name: [{get_param: enm_internal_security_group_name}]
+          enm_external_security_group_name: {get_param: enm_external_security_group_name}
+          nat_combined_security_groups: {get_param: nat_combined_security_groups}
+          internal_port_security_enabled: {get_param: internal_port_security_enabled}
+          allowed_address_pairs: {get_param: allowed_address_pairs}
+          svc_FM_vip_internal: {get_param: svc_FM_vip_internal}
+          svc_CM_vip_internal: {get_param: svc_CM_vip_internal}
+          svc_PM_vip_internal: {get_param: svc_PM_vip_internal}
+          lvs_allowed_address_pairs: {get_param: lvs_allowed_address_pairs}
+          svc_FM_ipv6_vip_internal: {get_param: svc_FM_ipv6_vip_internal}
+          svc_CM_ipv6_vip_internal: {get_param: svc_CM_ipv6_vip_internal}
+          svc_FM_vip_to_fip: {get_param: svc_FM_vip_to_fip}
+          svc_CM_vip_to_fip: {get_param: svc_CM_vip_to_fip}
+          svc_PM_vip_to_fip: {get_param: svc_PM_vip_to_fip}
+          enm_rhel7_base_image_name: {get_param: enm_rhel7_base_image_name}
+          flavor_lvsrouter: {get_param: flavor_lvsrouter}
+          key_name: {get_param: key_name}
+          use_config_drive: {get_param: use_config_drive}
+          timezone: {get_param: timezone}
+          svc_CM_vip_external_ip_address: {get_param: svc_CM_vip_external_ip_address}
+          svc_FM_vip_external_ip_address: {get_param: svc_FM_vip_external_ip_address}
+          svc_PM_vip_external_ip_address: {get_param: svc_PM_vip_external_ip_address}
+          service_registry_datacenter: {get_param: service_registry_datacenter}
+          service_registry_domain: {get_param: service_registry_domain}
+          internal_interface: {get_param: internal_interface}
+          internal_netmask: {get_param: internal_netmask}
+          internal_subnet: {get_param: internal_subnet}
+          external_gateway: {get_param: external_gateway}
+          external_mtu: {get_param: external_mtu}
+          external_interface: {get_param: external_interface}
+          external_netmask: {get_param: external_netmask}
+          lvs_external_PM_vrrp_id: {get_param: lvs_external_PM_vrrp_id}
+          lvs_external_CM_vrrp_id: {get_param: lvs_external_CM_vrrp_id}
+          lvs_external_FM_vrrp_id: {get_param: lvs_external_FM_vrrp_id}
+          service_registry_dns_port: {get_param: service_registry_dns_port}
+          serviceregistry_internal_ip_list: {get_param: serviceregistry_internal_ip_list}
+          server_group_uuid: {get_resource: lvs_server_group}
+          nameserverA: {get_param: nameserverA}
+          nameserverB: {get_param: nameserverB}
+          nameserverA_IPv6: {get_param: nameserverA_IPv6}
+          nameserverB_IPv6: {get_param: nameserverB_IPv6}
+          external_gateway_ipv6: {get_param: external_gateway_ipv6}
+          internal_subnet_ipv6: {get_param: internal_subnet_ipv6}
+          enm_external_network_name: {get_param: enm_external_network_name}
+          smrs_sftp_securePort: {get_param: smrs_sftp_securePort}
